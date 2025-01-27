@@ -15,12 +15,12 @@ from rekep.utils import (
 from sam2.build_sam import build_sam2
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+from hydra import compose, initialize
+from hydra.utils import instantiate
 
-checkpoint =  '/data3/model_ckpt/sam2_hiera_small.pt'
-model_cfg = "configs/sam2/sam2_hiera_s.yaml"
+checkpoint =  "//home//kinova//Model//sam2.1_hiera_base_plus.pt"
+model_cfg = "//home//kinova//Model//sam2.1_hiera_base_plus.yaml"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-
 
 # from rekep.perception.realsense import initialize_realsense
 from rekep.perception.gdino import GroundingDINO
@@ -158,7 +158,6 @@ class MainVision:
         metadata = {'init_keypoint_positions': keypoints, 'num_keypoints': len(keypoints)}
         rekep_program_dir = self.constraint_generator.generate(projected_img, instruction, metadata)
         print(f'{bcolors.HEADER}Constraints generated and saved in {rekep_program_dir}{bcolors.ENDC}')
-
         
     def _show_objects(self, rgb, results):
         import matplotlib.pyplot as plt
@@ -195,3 +194,5 @@ if __name__ == "__main__":
 
     main = MainVision(visualize=args.visualize)
     main.perform_task(instruction=args.instruction, obj_list=args.obj_list, data_path=args.data_path, frame_number=args.frame_number)
+
+# python main_vision.py --instruction "help me take that bottle of water" --obj_list 'bottle' --data_path /home/kinova/Rekep4Real/data --frame_number 2

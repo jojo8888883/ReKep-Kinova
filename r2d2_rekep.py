@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import pdb 
+from scipy.spatial.transform import Rotation as R
 
 import argparse
 from rekep.environment import R2D2Env
@@ -12,6 +13,7 @@ from rekep.subgoal_solver import SubgoalSolver
 from rekep.path_solver import PathSolver
 import rekep.transform_utils as T
 from rekep.visualizer import Visualizer
+from kinova import KinovaRobot
 
 from rekep.utils import (
     bcolors,
@@ -69,7 +71,7 @@ class MainR2D2:
         torch.cuda.manual_seed(self.config['seed'])
 
         # self.vision = R2D2Vision(visualize=self.visualize)
-
+        self.kinova = KinovaRobot()
         self.env = R2D2Env(global_config['env'])
         
         ik_solver = FrankaIKSolver(
@@ -83,7 +85,7 @@ class MainR2D2:
 
         if visualize:
             self.visualizer = Visualizer(global_config['visualizer'])
-            self.data_path = "/home/franka/R2D2_3dhat/images/current_images"
+            self.data_path = "D:\ReKep-main\data"
 
     @timer_decorator
     def perform_task(self, instruction, obj_list=None, rekep_program_dir=None):
@@ -122,19 +124,22 @@ class MainR2D2:
         self.all_actions = []
         # pdb.set_trace()
         # Process each stage sequentially
-        if 1:
-            # Read stage from robot state file
-            with open('./robot_state.json', 'r') as f:
-                robot_state = json.load(f)
-                stage = robot_state.get('rekep_stage', 1)  # !!! @Tianyou Default to stage 1 if not found
-            # store robot state in rekep_program_dir
-            with open(os.path.join(rekep_program_dir, f'robot_state_{stage}.json'), 'w') as f:
-                json.dump(robot_state, f, indent=4)
-                 # Get current state
+        # if 1:
+        # Read stage from robot state file
+        with open('./robot_state.json', 'r') as f:
+            robot_state = json.load(f)
+            stage = robot_state.get('rekep_stage', 1)  # !!! @Tianyou Default to stage 1 if not found
+        # store robot state in rekep_program_dir
+        with open(os.path.join(rekep_program_dir, f'robot_state_{stage}.json'), 'w') as f:
+            json.dump(robot_state, f, indent=4)
+                # Get current state
+        while int(stage) <= self.program_info['num_stages']:
             scene_keypoints = self.env.get_keypoint_positions()
             self.keypoints = np.concatenate([[self.env.get_ee_pos()], scene_keypoints], axis=0)
-            self.curr_ee_pose = self.env.get_ee_pose()  # TODO check, may be constant? 
-            self.curr_joint_pos = self.env.get_arm_joint_positions() 
+            # self.curr_ee_pose = self.env.get_ee_pose()  # TODO check, may be constant? 
+            # self.curr_joint_pos = self.env.get_arm_joint_positions() 
+            self.curr_ee_pose = self._kinova_get_ee_pos()
+            self.curr_joint_pos = self._kinova_get_joint_pos()
             self.sdf_voxels = self.env.get_sdf_voxels(self.config['sdf_voxel_size']) # TODO ???
             self.collision_points = self.env.get_collision_points()
             
@@ -168,7 +173,19 @@ class MainR2D2:
             # elif self.is_release_stage:
             #     next_path[-1, 7] = self.env.get_gripper_open_action() 
                 
+            for i in range(next_path.shape[0]):
+                if self.is_grasp_stage:
+                    next_path[i, 7] = self.env.get_gripper_close_action()
+                elif self.is_release_stage:
+                    next_path[i, 7] = self.env.get_gripper_open_action()
+
+            for i in range(next_path.shape[0]):
+                target_pos = next_path[i, :7]
+                self._kinova_move_to_ee_pos(target_pos)
+                
             self.all_actions.append(next_path)
+            stage += 1
+            self._update_stage(stage)
 
         # Combine all action sequences
         combined_actions = np.concatenate(self.all_actions, axis=0)
@@ -191,6 +208,38 @@ class MainR2D2:
             return  
             
             return
+
+    def _kinova_get_joint_pos(self):
+        joint_pos = self.kinova.get_joint_positions()
+        return joint_pos
+    
+    def _kinova_get_ee_pos(self):
+        ee_pos = self.kinova.get_tool_position()
+        angles = ee_pos[3:]
+        angles = np.radians(angles)
+        rotation = R.from_euler('xyz', angles)
+        quat = rotation.as_quat()
+        quat = quat.reshape(1, -1)
+        quat = quat[0]
+        return np.concatenate([ee_pos[:3], quat])
+    
+    def _kinova_move_to_ee_pos(self, target_pos):
+        target_quat = target_pos[3:]
+        rotation = R.from_quat(target_quat)
+        angles_rad = rotation.as_euler('xyz')
+        angles_deg = np.degrees(angles_rad)
+        target_pos = np.concatenate([target_pos[:3], angles_deg])
+        # name each element in target_pos
+        target_pos = {
+            "x": target_pos[0],
+            "y": target_pos[1],
+            "z": target_pos[2],
+            "theta_x": target_pos[3],
+            "theta_y": target_pos[4],
+            "theta_z": target_pos[5]
+        }
+        self.kinova.move_to_tool_position(target_pos)
+
     def _load_constraints(self, rekep_program_dir):
         """Helper to load all stage constraints"""
         constraint_fns = dict()
@@ -306,17 +355,19 @@ if __name__ == "__main__":
     # args.instruction = "Put the green package in the drawer, the robot is already grasping the package and the package is already aligned with the drawer opening."
     # args.obj_list = ['cloth']
 
-    vlm_query_dir = "/home/franka/R2D2_3dhat/ReKep/vlm_query/"
+    # vlm_query_dir = "/home/franka/R2D2_3dhat/ReKep/vlm_query/"
 
-    vlm_dirs = [os.path.join(vlm_query_dir, d) for d in os.listdir(vlm_query_dir) 
-                if os.path.isdir(os.path.join(vlm_query_dir, d))]
+    # vlm_dirs = [os.path.join(vlm_query_dir, d) for d in os.listdir(vlm_query_dir) 
+    #             if os.path.isdir(os.path.join(vlm_query_dir, d))]
     
-    if vlm_dirs:
-        newest_rekep_dir = max(vlm_dirs, key=os.path.getmtime)
-        print(f"\033[92mUsing most recent directory: {newest_rekep_dir}\033[0m")
-    else:
-        print("No directories found under vlm_query")
-        sys.exit(1)
+    # if vlm_dirs:
+    #     newest_rekep_dir = max(vlm_dirs, key=os.path.getmtime)
+    #     print(f"\033[92mUsing most recent directory: {newest_rekep_dir}\033[0m")
+    # else:
+    #     print("No directories found under vlm_query")
+    #     sys.exit(1)
+
+    newest_rekep_dir = "//home//kinova//Rekep4Real//vlm_query//2025-01-21_22-27-34_help_me_take_that_bottle_of_water"
 
     main = MainR2D2(visualize=args.visualize)
     main.perform_task(instruction=args.instruction, rekep_program_dir=newest_rekep_dir)

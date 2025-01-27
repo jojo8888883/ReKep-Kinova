@@ -63,11 +63,11 @@ class Visualizer:
     def get_scene_pointcloud(self, data_path):
         """Load real scene data from camera"""
         # Load RGB image
-        rgb = cv2.imread(f"{data_path}/fixed_camera_raw.png")
+        rgb = cv2.imread(f"{data_path}/temp_rgb.png")
         rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
         
         # Load depth image
-        depth = np.load(f"{data_path}/fixed_camera_depth.npy")
+        depth = np.load(f"{data_path}/depth_000001.npy")
         
         height, width = depth.shape
         x, y = np.meshgrid(np.arange(width), np.arange(height))
@@ -87,6 +87,7 @@ class Visualizer:
         
         # Filter by bounds
         within_bounds = filter_points_by_bounds(points, self.bounds_min, self.bounds_max)
+        within_bounds = np.logical_and(within_bounds, points[:, 2] > 0.0)
         points = points[within_bounds]
         colors = colors[within_bounds]
         
@@ -230,5 +231,6 @@ if __name__ == "__main__":
     visualizer = Visualizer()
     path = json.load(open("outputs/action.json"))['ee_action_seq'] 
 
-    franka_image = "/home/franka/R2D2_3dhat/images/current_images"
-    visualizer.visualize_path(path, data_path=franka_image)
+    # franka_image = "/home/franka/R2D2_3dhat/images/current_images"
+    kinova_image = "D:\ReKep-main\images"
+    visualizer.visualize_path(path, data_path=kinova_image)

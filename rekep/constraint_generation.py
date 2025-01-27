@@ -16,7 +16,9 @@ def encode_image(image_path):
 class ConstraintGenerator:
     def __init__(self, config):
         self.config = config
-        self.client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
+        # self.client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
+        self.client = OpenAI(base_url='https://api.openai-proxy.org/v1',
+        api_key='sk-eLlJ9Vlwl88PbUCokdmCMG1B39RoWSAoLSon7edAkNy0TR11',)
         self.base_dir = './vlm_query'
         with open(os.path.join(self.base_dir, 'prompt_template.txt'), 'r') as f:
             self.prompt_template = f.read()
@@ -140,11 +142,16 @@ class ConstraintGenerator:
                                                         temperature=self.config['temperature'],
                                                         max_tokens=self.config['max_tokens'],
                                                         stream=True)
+        print(f"Querying OpenAI API for constraints...")
+        print(stream)
         output = ""
         start = time.time()
         for chunk in stream:
+            # print('we are in the loop\n')
+            # print(chunk)
+            # print(chunk.choices[0].delta.content)
             print(f'[{time.time()-start:.2f}s] Querying OpenAI API...', end='\r')
-            if chunk.choices[0].delta.content is not None:
+            if len(chunk.choices) > 0 and chunk.choices[0].delta.content is not None:
                 output += chunk.choices[0].delta.content
         print(f'[{time.time()-start:.2f}s] Querying OpenAI API...Done')
         # save raw output

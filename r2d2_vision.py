@@ -24,6 +24,7 @@ import os
 import torch
 import numpy as np
 import argparse
+import pyrealsense2 as rs
 import supervision as sv
 import cv2
 import json
@@ -37,8 +38,8 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
-SAM2_CKPT =  "./checkpoints/sam2.1_hiera_small.pt"
-SMA2_CFIG = "configs/sam2.1/sam2.1_hiera_s.yaml"
+SAM2_CKPT =  '\home\kinova\Model\sam2.1_hiera_base_plus.pt'
+SMA2_CFIG = "\home\kinova\Model\sam2.1_hiera_base_plus.yaml"
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # from rekep.perception.realsense import initialize_realsense
@@ -63,7 +64,7 @@ def timer_decorator(func):
 @timer_decorator
 class R2D2Vision:
     @timer_decorator
-    def __init__(self, visualize):
+    def __init__(self, visualize=False):
         global_config = get_config(config_path="./configs/config.yaml")
         self.config = global_config['main']
         self.visualize = visualize
@@ -110,10 +111,14 @@ class R2D2Vision:
         nx = np.linspace(0, width-1, width)
         ny = np.linspace(0, height-1, height)
         u, v = np.meshgrid(nx, ny)
-        
+            
+        # 创建一个与原图像大小相同的空点云
         points = np.zeros((height * width, 3))
+        
+        # 只处理非零点
         valid_mask = depth > 0
         
+        # 计算有效点的3D坐标
         x = (u[valid_mask].flatten() - intrinsics.ppx) / intrinsics.fx
         y = (v[valid_mask].flatten() - intrinsics.ppy) / intrinsics.fy
         z = depth[valid_mask].flatten() * depth_scale
@@ -121,6 +126,7 @@ class R2D2Vision:
         x = np.multiply(x, z)
         y = np.multiply(y, z)
 
+        # 将有效点放回对应位置
         valid_indices = np.where(valid_mask.flatten())[0]
         points[valid_indices] = np.stack((x, y, z), axis=-1)
 
@@ -134,7 +140,6 @@ class R2D2Vision:
         else:
             color_path = os.path.join(data_path, 'fixed_camera_raw.png')
             depth_path = os.path.join(data_path, 'fixed_camera_depth.npy')
-
 
         print(f"\033[92mDebug: Looking for files at:\033[0m")
         print(f"\033[92mDebug: Color path: {color_path}\033[0m")
@@ -152,17 +157,11 @@ class R2D2Vision:
         cv2.imwrite(f'./data/r2d2_vision/zed/color_{instruction}_{time.strftime("%Y%m%d_%H%M%S")}.png', bgr)
         np.save(f'./data/r2d2_vision/zed/depth_{instruction}_{time.strftime("%Y%m%d_%H%M%S")}.npy', depth)
         
-        if 1: # Prompt-free Detection mode
-            print(f"\033[92mDebug: Dino-X Detection mode\033[0m")
-            gdino = GroundingDINO()
-            predictions = gdino.get_dinox(color_path, obj_list)
-            bboxes, masks = gdino.visualize_bbox_and_mask(predictions, color_path, './data/')
-            masks = masks.astype(bool)
-            masks = np.stack(masks, axis=0)  # Convert list to 3D array
-
-        elif 0:  # OLD detection mode
+        # obj_list = ['bottle']
+        # TODO: add DINOX mode
+        if obj_list:
             print(f"\033[92mDebug: Manual mask mode\033[0m")
-            sam_model = build_sam2(SMA2_CFIG, SAM2_CKPT, device=device)
+            sam_model = build_sam2(SMA2_CFIG, SAM2_CKPT).to(device)
             self.mask_generator = SAM2ImagePredictor(sam_model)
             self.mask_generator.set_image(rgb)
 
@@ -170,13 +169,13 @@ class R2D2Vision:
             if isinstance(obj_list, str):
                 obj_list = obj_list.split(',')  # 如果输入是逗号分隔的字符串
             results = gdino.detect_objects(color_path, obj_list)
-            self._show_objects(rgb, results.objects)
+            # self._show_objects(rgb, results.objects)
             boxes = []
             for obj in results.objects:
                 print(f"class: {obj.category}, conf: {obj.score:.2f}, bbox: {obj.bbox}")
                 boxes.append(obj.bbox)
             print(f"\033[92mDebug: obj_list: {obj_list}\033[0m")
-           
+            print(f"\033[92mDebug: Boxes: {boxes}\033[0m")
             # SAM
             with torch.no_grad():
                 masks, scores, logits = self.mask_generator.predict(box=boxes, multimask_output=False)
@@ -203,9 +202,8 @@ class R2D2Vision:
         # ====================================
         keypoints, projected_img = self.keypoint_proposer.get_keypoints(rgb, points, masks)
         print(f'{bcolors.HEADER}Got {len(keypoints)} proposed keypoints{bcolors.ENDC}')
-        print('self.visualize:',self.visualize)
-        # if self.visualize:
-        self._show_image(projected_img,rgb)
+        if self.visualize:
+            self._show_image(projected_img,rgb)
         metadata = {'init_keypoint_positions': keypoints, 'num_keypoints': len(keypoints)}
         rekep_program_dir = self.constraint_generator.generate(projected_img, instruction, metadata)
         print(f'{bcolors.HEADER}Constraints generated and saved in {rekep_program_dir}{bcolors.ENDC}')
@@ -230,7 +228,7 @@ class R2D2Vision:
         plt.imshow(idx_img)
         plt.axis('on')
         plt.title('Annotated Image with Keypoints')
-        plt.savefig('./data/rekep_with_keypoints.png', bbox_inches='tight', dpi=300)
+        plt.savefig('data/rekep_with_keypoints.png', bbox_inches='tight', dpi=300)
         plt.close()
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -241,18 +239,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     if args.instruction is None:
-        args.instruction = "Place the marker on the white cube."
-        # args.instruction = "Brew a cup of espresso."
         # args.instruction = "Put down the green package into drawer."
         # args.instruction = "Pour the object in the bowl into the pot."
-        # args.instruction = "Place the pasta bag into the drawer, the end-effector is already at the drawer's keypoint, the drawer is already aligned with the pasta bag and at the proper height."
+        args.instruction = "Place the pasta bag into the drawer, the end-effector is already at the drawer's keypoint, the drawer is already aligned with the pasta bag and at the proper height."
         # args.instruction = "Pour the object in the bowl into the pot, the end-effector is already at the bowl's keypoint, the bowl is already aligned with the pot and at the proper height."
     if args.data_path is None:
-        args.data_path = "/home/xu/Desktop/workspace/Rekep/realsense_captures"
-    if args.obj_list is None:
-        args.obj_list = "marker pen . white cube . robot gripper"
-    if args.visualize is None:
-        args.visualize = True
+        args.data_path = "/home/franka/R2D2_3dhat/images/current_images"
+    # if args.obj_list is None:
+        # args.obj_list = "bowl, pan, robot end_effector"
     main = R2D2Vision(visualize=args.visualize)
     rekep_program_dir = main.perform_task(instruction=args.instruction, obj_list=args.obj_list, data_path=args.data_path)
     print(f"\033[92mDebug: rekep_program_dir: {rekep_program_dir}\033[0m")
